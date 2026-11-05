@@ -1,0 +1,6 @@
+# Build environment and outputs (the .exe goes to GitHub Releases, not into git)
+.venv/
+build/
+dist/
+*.spec
+__pycache__/
