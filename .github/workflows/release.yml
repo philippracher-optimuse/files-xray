@@ -1,0 +1,30 @@
+# Builds FilesXray.exe on a Windows machine at GitHub and attaches it to a release.
+# Runs automatically when a version tag like v1.1.0 is pushed (release.bat does that).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write  # needed to create the release
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build FilesXray.exe
+        run: |
+          python -m pip install pyinstaller
+          python -m PyInstaller --noconfirm --onefile --console --name FilesXray --add-data "index.html;." server.py
+
+      - name: Create release with the .exe
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" dist/FilesXray.exe --title "FilesXray ${{ github.ref_name }}" --notes-from-tag
