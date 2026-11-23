@@ -14,6 +14,14 @@
   button { padding:8px 12px; border:1px solid var(--line); background:#fff; border-radius:6px; cursor:pointer; font-size:13px; }
   button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
   button:hover { filter:brightness(0.95); }
+  button.danger { background:#fff; color:#b91c1c; border-color:#f3c2c2; }
+  button.danger:hover { background:#fdecec; }
+  button:disabled { opacity:.5; cursor:default; }
+  .link.danger { color:#b91c1c; }
+  .link.danger:hover { color:#7f1d1d; text-decoration:underline; }
+  .notice { padding:10px 14px; border-radius:6px; margin:0 0 12px; font-size:14px; }
+  .notice.ok { background:#e8f7ee; color:#166534; border:1px solid #bfe5cc; }
+  .notice.err { background:#fdecec; color:#991b1b; border:1px solid #f3c2c2; }
   main { padding:18px 24px; max-width:1200px; }
   .crumbs { font-size:14px; margin-bottom:10px; }
   .crumbs a { color:var(--accent); cursor:pointer; text-decoration:none; }
@@ -51,6 +59,7 @@
 <main>
   <div class="crumbs" id="crumbs"></div>
   <div class="summary" id="summary"></div>
+  <div id="notice"></div>
   <div id="status">Lade …</div>
   <div id="content"></div>
 </main>
@@ -75,6 +84,7 @@ async function go(path) {
   if (!path) return;
   document.getElementById('status').textContent = 'Berechne Größen … (beim ersten Mal kann das bei großen Ordnern etwas dauern)';
   document.getElementById('content').innerHTML = '';
+  if (path !== (current && current.path)) notice('');
   const data = await api('/api/list?path=' + encodeURIComponent(path));
   if (data.error) {
     document.getElementById('status').innerHTML = '<span class="error">' + esc(data.error) + '</span>';
@@ -105,10 +115,13 @@ function render() {
     <span>Unterordner: <b>${d.folders.length}</b></span>
     <span>Davon leer: <b>${emptyCount}</b></span>
     <span>Dateien (gesamt, inkl. Unterordner): <b>${d.total_files.toLocaleString('de-DE')}</b></span>
+    <span>Leere Ordner (alle Ebenen): <b>${d.empty_dirs.toLocaleString('de-DE')}</b></span>
     <label><input type="checkbox" ${onlyEmpty ? 'checked' : ''} onchange="onlyEmpty=this.checked; render()"> nur leere Ordner zeigen</label>
     ${d.parent ? `<button onclick='go(${JSON.stringify(d.parent)})'>⬆ Eine Ebene hoch</button>` : ''}
     <button onclick='openExt(${JSON.stringify(d.path)})'>Im Explorer öffnen</button>
-    <button onclick='showLargest()'>🔎 Größte Dateien hier (inkl. Unterordner)</button>`;
+    <button onclick='showLargest()'>🔎 Größte Dateien hier (inkl. Unterordner)</button>
+    <button class="danger" ${d.empty_dirs ? '' : 'disabled'} title="Löscht alle Ordner unterhalb dieses Pfads, in denen keine einzige Datei liegt (auch verschachtelte). Dateien werden nie gelöscht."
+      onclick='deleteEmpty(${JSON.stringify(d.path)}, "below")'>🗑 Alle leeren Ordner hier löschen</button>`;
 
   const max = Math.max(1, ...d.folders.map(f => f.size), ...d.files.map(f => f.size));
   const folders = onlyEmpty ? d.folders.filter(f => f.empty) : d.folders;
@@ -117,7 +130,7 @@ function render() {
   if (!folders.length) {
     html += '<p class="muted">Keine ' + (onlyEmpty ? 'leeren ' : '') + 'Unterordner.</p>';
   } else {
-    html += `<table><tr><th>Name</th><th class="num">Größe (GB)</th><th></th><th>Unterordner?</th><th class="num">Dateien (gesamt)</th><th>Status</th><th></th></tr>`;
+    html += `<table><tr><th>Name</th><th class="num">Größe (GB)</th><th></th><th>Unterordner?</th><th class="num">Dateien (gesamt)</th><th>Status</th><th></th><th></th></tr>`;
     for (const f of folders) {
       const status = f.denied ? '<span class="tag denied">kein Zugriff</span>'
                    : f.empty ? '<span class="tag empty">LEER</span>' : '';
@@ -130,6 +143,11 @@ function render() {
         <td class="num">${f.total_files.toLocaleString('de-DE')}</td>
         <td>${status}</td>
         <td><span class="link" onclick='openExt(${JSON.stringify(f.path)})'>Explorer</span></td>
+        <td>${f.empty
+              ? `<span class="link danger" title="Diesen Ordner samt seinen leeren Unterordnern löschen" onclick='deleteEmpty(${JSON.stringify(f.path)}, "self")'>🗑 Ordner löschen</span>`
+              : f.empty_dirs
+                ? `<span class="link danger" title="Nur die leeren Ordner darin löschen, dieser Ordner bleibt" onclick='deleteEmpty(${JSON.stringify(f.path)}, "below")'>🗑 ${f.empty_dirs} leere darin löschen</span>`
+                : ''}</td>
       </tr>`;
     }
     html += '</table>';
@@ -168,6 +186,43 @@ async function showLargest() {
   }
   box.innerHTML = html + '</table>';
   box.scrollIntoView({ behavior: 'smooth' });
+}
+
+async function post(url) {
+  const r = await fetch(url, { method: 'POST', headers: { 'X-FilesXray': '1' } });
+  return r.json();
+}
+
+function notice(html, ok) {
+  document.getElementById('notice').innerHTML = html ? `<div class="notice ${ok ? 'ok' : 'err'}">${html}</div>` : '';
+}
+
+// mode "self": the folder itself (only if it holds no files) incl. its empty subfolders
+// mode "below": all empty folders anywhere inside; the folder itself stays
+async function deleteEmpty(path, mode) {
+  notice('');
+  const q = '/api/delete-empty?mode=' + mode + '&path=' + encodeURIComponent(path);
+  const preview = await post(q + '&dry=1');
+  if (preview.error) { notice(esc(preview.error), false); return; }
+  if (!preview.count) { notice('Keine leeren Ordner gefunden.', true); return; }
+
+  const base = path.endsWith('\\') ? path : path + '\\';
+  const rel = p => p.startsWith(base) ? p.slice(base.length) : p;
+  const shown = preview.deleted.slice(0, 15).map(p => '  • ' + rel(p)).join('\n');
+  const more = preview.count > 15 ? `\n  … und ${preview.count - 15} weitere` : '';
+  const where = mode === 'self' ? `Ordner „${path}“ samt leeren Unterordnern` : `Leere Ordner unterhalb von\n${path}`;
+  if (!confirm(`${where}\n\n${preview.count} leere(r) Ordner werden endgültig gelöscht (nicht im Papierkorb):\n\n${shown}${more}\n\nDateien werden nicht angetastet. Fortfahren?`)) return;
+
+  const res = await post(q + '&dry=0');
+  if (res.error) { notice(esc(res.error), false); return; }
+  // After deleting the folder itself, stay in the current view; otherwise reload the same view.
+  await go(current.path);
+  let msg = `✔ ${res.count} leere(r) Ordner gelöscht.`;
+  if (res.errors.length) {
+    msg += `<br>${res.errors.length} Ordner konnten nicht gelöscht werden:<br>` +
+      res.errors.slice(0, 10).map(e => esc(e.path) + ' <span class="muted">(' + esc(e.error) + ')</span>').join('<br>');
+  }
+  notice(msg, !res.errors.length);
 }
 
 function openExt(path) { fetch('/api/open?path=' + encodeURIComponent(path)); }
